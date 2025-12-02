@@ -6,11 +6,44 @@ import { Sparkles, Heart, Briefcase, Shield, Zap, Calendar, Camera, Share2, Chev
  */
 
 // --- API Service Configuration ---
-// [중요] 깃허브 배포 및 로컬 실행 시에는 아래 주석을 풀고 사용하세요!
-const apiKey = import.meta.env.VITE_API_KEY;
-//const apiKey = ""; // 현재 미리보기 환경을 위해 임시로 비워둡니다. (자동 주입)
+const apiKey = import.meta.env.VITE_API_KEY; // 로컬/Vercel 사용 시 이 줄을 활성화
 
-// --- API Functions ---
+
+// --- Utility Functions ---
+
+// SVG Data URL을 PNG Blob으로 변환하는 함수 (이미지 다운로드 오류 해결)
+function svgDataURLToPngBlob(svgDataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            // SVG의 뷰박스 크기를 기준으로 캔버스 크기 설정
+            canvas.width = img.naturalWidth || 512;
+            canvas.height = img.naturalHeight || 512;
+            
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+
+            // Export as PNG Blob
+            canvas.toBlob((blob) => {
+                if (blob) {
+                    resolve(blob);
+                } else {
+                    reject(new Error("PNG conversion failed (Blob is null)."));
+                }
+            }, 'image/png');
+        };
+        
+        img.onerror = (e) => {
+             console.error("Image loading failed:", e);
+             reject(new Error("Failed to load SVG image for conversion."));
+        };
+
+        // 이미지 로드를 위해 Base64 SVG 데이터 삽입
+        img.src = svgDataUrl;
+    });
+}
 
 const safeJSONParse = (jsonString) => {
   try {
@@ -38,7 +71,7 @@ const normalizeFortuneData = (data) => {
       score: typeof data.daily?.score === 'number' ? data.daily.score : 80,
       mission: data.daily?.mission || "하늘 한번 쳐다보고 크게 웃기",
       lotto: Array.isArray(data.daily?.lotto) ? data.daily.lotto : [1, 7, 15, 23, 34, 42],
-      initial: data.daily?.initial || "ㅎ",
+      initial: data.daily?.initial || "ㅅㅎ", // 두 글자 초성 기본값
     },
     loveMatch: {
       charmScore: typeof data.loveMatch?.charmScore === 'number' ? data.loveMatch.charmScore : 85,
@@ -56,8 +89,19 @@ const normalizeFortuneData = (data) => {
   };
 };
 
+// [핵심] 지수 백오프 로직 적용
 async function generateFullFortune(userData) {
-  const prompt = `
+  // 로컬 환경에서 키 설정 오류 시 즉시 피드백 제공
+  if (!apiKey || apiKey === 'undefined') {
+      alert("API 키가 설정되지 않았습니다! '.env' 파일과 'App.jsx' 상단 설정을 확인해주세요. (Local)");
+      return null;
+  }
+
+  const MAX_RETRIES = 3;
+  let delay = 1000; // 1 second starting delay
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const prompt = `
     역할: 30년 경력의 명리학자이자 MZ세대 멘토인 AI 점술가.
     임무: 2026년(병오년, 적토마의 해) 종합 운세, '오늘'의 운세, '오늘'의 연애운 분석.
     사용자 정보: ${userData.birthDate}생, 태어난 시간 ${userData.time || '모름'}, 성별 ${userData.gender}, MBTI ${userData.mbti}.
@@ -73,7 +117,7 @@ async function generateFullFortune(userData) {
        - score: 오늘의 운세 점수 (0~100 숫자).
        - mission: 오늘 실천할 행운의 미션 1가지.
        - lotto: 행운의 로또 번호 6개.
-       - initial: 행운의 초성 1개.
+       - initial: 행운의 초성 2개 (띄어쓰기 없이).
     5. [오늘의 사랑 찾기] loveMatch:
        - charmScore: *오늘* 나의 도화살/매력도 점수 (0~100 숫자).
        - bestMbti: *오늘* 가장 잘 맞는 운명의 MBTI.
@@ -91,7 +135,7 @@ async function generateFullFortune(userData) {
       "summary": "...",
       "hashtags": ["...", "...", "..."],
       "details": { "wealth": "...", "love": "...", "career": "...", "health": "..." },
-      "daily": { "todaySummary": "...", "score": 90, "mission": "...", "lotto": [1, 2, 3, 4, 5, 6], "initial": "김" },
+      "daily": { "todaySummary": "...", "score": 90, "mission": "...", "lotto": [1, 2, 3, 4, 5, 6], "initial": "ㅅㅎ" },
       "loveMatch": { "charmScore": 85, "bestMbti": "ENFP", "advice": "..." },
       "careerWealth": { "jobs": ["...", "...", "..."], "workStyle": "...", "salary": "...", "hiddenSkill": "..." },
       "villain": "...",
@@ -99,41 +143,54 @@ async function generateFullFortune(userData) {
     }
   `;
 
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      })
-    });
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Fortune API Error Details:", errorText);
-        throw new Error(`API Request Failed: ${response.status} ${response.statusText}`);
+      if (response.status === 429) {
+          // Rate Limit Hit - Retry
+          console.warn(`Rate limit hit (429). Retrying in ${delay / 1000}s... (Attempt ${attempt + 1}/${MAX_RETRIES})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; // Exponential Backoff (1s, 2s, 4s)
+          continue; 
+      }
+
+      if (!response.ok) {
+          const errorText = await response.text();
+          console.error("Fortune API Error Details:", errorText);
+          throw new Error(`API Request Failed: ${response.status} ${response.statusText}`);
+      }
+  
+      // Success case
+      const data = await response.json();
+      const textResponse = data.candidates[0].content.parts[0].text;
+      const rawData = safeJSONParse(textResponse);
+      return normalizeFortuneData(rawData);
+
+    } catch (error) {
+        console.error(`Attempt ${attempt + 1} failed:`, error);
+        if (attempt === MAX_RETRIES - 1) {
+            // Last attempt failed due to non-429 error 
+            break; 
+        }
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay *= 2;
     }
-
-    const data = await response.json();
-    
-    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
-        console.error("API Response Structure Error:", data);
-        throw new Error("Invalid API response");
-    }
-
-    const textResponse = data.candidates[0].content.parts[0].text;
-    const rawData = safeJSONParse(textResponse);
-    return normalizeFortuneData(rawData);
-
-  } catch (error) {
-    console.error("Fortune API Error", error);
-    alert("운세 데이터를 받아오는데 실패했습니다. (API Error) 잠시 후 다시 시도해주세요.");
-    return null;
   }
+
+  // If all retries fail
+  alert("앗! 지금 AI 점술가를 찾는 분들이 너무 많아요! 🤯\n잠시 뒤에 다시 시도해 주시면 금방 봐드릴게요! 🍀");
+  return null;
 }
 
-async function generateCuteSVG(description) {
+// [무료 모드] 8비트 픽셀 아트(도트) 생성 함수 (SVG)
+async function generateCutePixelArtSVG(description) {
     const svgPrompt = `
       Role: Expert Pixel Artist.
       Task: Create a CUTE, 8-BIT PIXEL ART SVG code for: "${description}".
@@ -148,95 +205,102 @@ async function generateCuteSVG(description) {
       7. Return ONLY the raw <svg> string. No markdown. No explanations.
     `;
 
-    try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contents: [{ parts: [{ text: svgPrompt }] }] })
-        });
+    const MAX_RETRIES = 3;
+    let delay = 1000;
 
-        if (!response.ok) throw new Error("SVG Gen Failed");
-        const data = await response.json();
-        let svgCode = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        
-        const svgMatch = svgCode.match(/<svg[\s\S]*?<\/svg>/i);
-        if (svgMatch) {
-            svgCode = svgMatch[0];
-        } else {
-            svgCode = svgCode.replace(/```xml|```svg|```/g, "").trim();
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ contents: [{ parts: [{ text: svgPrompt }] }] })
+            });
+
+            if (response.status === 429) {
+                console.warn(`SVG Rate limit hit (429). Retrying in ${delay / 1000}s... (Attempt ${attempt + 1}/${MAX_RETRIES})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2;
+                continue; 
+            }
+
+            if (!response.ok) throw new Error("SVG Gen Failed");
+            
+            // Success logic remains the same
+            const data = await response.json();
+            let svgCode = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            const svgMatch = svgCode.match(/<svg[\s\S]*?<\/svg>/i);
+            if (svgMatch) {
+                svgCode = svgMatch[0];
+            } else {
+                svgCode = svgCode.replace(/```xml|```svg|```/g, "").trim();
+            }
+            
+            // [이미지 생성 오류 해결] SVG 코드가 유효한지 최종 검증
+            if (!svgCode.startsWith('<svg')) {
+                 console.error("Generated code is not a valid SVG.");
+                 throw new Error("Invalid SVG code received.");
+            }
+
+            const base64Svg = btoa(unescape(encodeURIComponent(svgCode)));
+            return `data:image/svg+xml;base64,${base64Svg}`;
+
+        } catch (e) {
+            console.error(`Attempt ${attempt + 1} failed during SVG generation:`, e);
+            if (attempt === MAX_RETRIES - 1) {
+                break; 
+            }
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay *= 2;
         }
-
-        const base64Svg = btoa(unescape(encodeURIComponent(svgCode)));
-        return `data:image/svg+xml;base64,${base64Svg}`;
-
-    } catch (e) {
-        console.error("SVG Fallback Error:", e);
-        return null;
     }
+    return null;
 }
 
+// generateLuckyIconImage 함수 복원됨
 async function generateLuckyIconImage(wish, userData) {
-  let characterDescription = "A cute fluffy rabbit smiling happily";
-
+  // 로컬 환경에서 키 설정 오류 시 즉시 피드백 제공
+  if (!apiKey || apiKey === 'undefined') {
+      alert("API 키가 설정되지 않았습니다! '.env' 파일과 'App.jsx' 상단 설정을 확인해주세요. (Local)");
+      return null;
+  }
+  
   try {
+    // 1단계: 어떤 동물을 그릴지 결정 (텍스트 모델)
     const designPrompt = `
       Analyze the user's MBTI (${userData.mbti}) and Wish ("${wish}").
-      Select a CUTE ANIMAL (avoiding common ones if possible).
-      Example: INFP->Rabbit, ENTJ->Lion, ENFP->Quokka.
-      Describe the character performing an action related to "${wish}".
+      Select a CUTE ANIMAL based on MBTI (e.g., ENTJ=Lion, INFP=Bunny, ESFP=Puppy).
+      Describe a scene where this [Cute Animal] is holding an object related to "${wish}".
       Output format: "A [Adjective] [Animal] [Action]"
     `;
 
+    // 텍스트 프롬프트 생성은 재시도 로직이 필요 없으므로 기존대로 유지 (내부 SVG 생성에서 재시도 담당)
     const designResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: designPrompt }] }] })
     });
 
-    if (designResponse.ok) {
-        const designData = await designResponse.json();
-        const extractedText = designData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (extractedText) characterDescription = extractedText;
-    }
-
-    const prompt = `
-      Role: Kawaii Illustrator. Goal: Create a cute 2D sticker.
-      Subject: ${characterDescription}.
-      Style: Sanrio-style, pastel flat colors, simple vector art.
-      Constraint: NO TEXT. White background.
-    `;
+    if (!designResponse.ok) throw new Error("Text Gen Failed");
     
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instances: [{ prompt: prompt }], parameters: { sampleCount: 1, aspectRatio: "1:1" } })
-    });
+    let characterDescription = "cute fluffy rabbit";
+    const designData = await designResponse.json();
+    const extractedText = designData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (extractedText) characterDescription = extractedText;
 
-    if (!response.ok) {
-        console.warn("Imagen API unavailable (likely billing). Switching to Free SVG Mode.");
-        const svgDataUrl = await generateCuteSVG(characterDescription);
-        if (svgDataUrl) return svgDataUrl;
-        
-        throw new Error("이미지 생성 실패 (유료 모델 및 무료 모드 모두 실패)");
-    }
-
-    const data = await response.json();
-    if (data.predictions && data.predictions[0]) {
-      return `data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`;
-    }
-    throw new Error("No image data");
+    // 2단계: 픽셀 아트 SVG 생성 (재시도 로직 내장)
+    const imageUrl = await generateCutePixelArtSVG(characterDescription);
+    
+    if (!imageUrl) throw new Error("Image Generation Failed");
+    return imageUrl;
 
   } catch (error) {
-    console.error("Final Icon Gen Error:", error);
-    const fallback = await generateCuteSVG(characterDescription);
-    if(fallback) return fallback;
-
-    alert("이미지 생성 서버가 혼잡하거나 권한이 없습니다. 잠시 후 다시 시도해주세요.");
+    console.error("Icon Gen Error:", error);
+    alert("앗! AI 화가님이 지금 너무 바쁜가 봐요! 🎨💦\n잠시 뒤에 다시 부탁해볼까요?");
     return null;
   }
 }
 
-// --- UI Components (Defined Outside App) ---
+// --- UI Components ---
 
 const LoadingScreen = ({ message }) => (
   <div className="flex flex-col items-center justify-center h-64 space-y-6 animate-pulse">
@@ -292,23 +356,32 @@ const Button = ({ onClick, children, variant = "primary", disabled = false, clas
 
 const SlotMachine = ({ numbers, initial }) => {
     const safeNumbers = Array.isArray(numbers) ? numbers : [1, 2, 3, 4, 5, 6];
-    const safeInitial = initial || "?";
+    const safeInitial = initial || "ㅅㅎ";
 
     const [isSpinning, setIsSpinning] = useState(false);
     const [displayNumbers, setDisplayNumbers] = useState(Array(6).fill("?"));
-    const [displayInitial, setDisplayInitial] = useState("?");
+    const [displayInitial, setDisplayInitial] = useState(["?", "?"]);
+
+    // 초성 리스트를 두 글자 조합에 맞게 확장
+    const initialList = ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"];
+    const getRandomInitial = () => initialList[Math.floor(Math.random() * initialList.length)];
+    
+    useEffect(() => {
+        // 컴포넌트 마운트 시 초기값 설정 (두 글자)
+        setDisplayInitial(safeInitial.split('').slice(0, 2));
+    }, [safeInitial]);
 
     const handleSpin = () => {
         setIsSpinning(true);
         let counter = 0;
         const interval = setInterval(() => {
             setDisplayNumbers(displayNumbers.map(() => Math.floor(Math.random() * 45) + 1));
-            setDisplayInitial(["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"][Math.floor(Math.random() * 14)]);
+            setDisplayInitial([getRandomInitial(), getRandomInitial()]);
             counter++;
             if (counter > 15) {
                 clearInterval(interval);
                 setDisplayNumbers(safeNumbers);
-                setDisplayInitial(safeInitial);
+                setDisplayInitial(safeInitial.split('').slice(0, 2));
                 setIsSpinning(false);
             }
         }, 100);
@@ -324,11 +397,13 @@ const SlotMachine = ({ numbers, initial }) => {
                     </div>
                 ))}
             </div>
-             <div className="flex items-center justify-center gap-2 mb-4">
+             <div className="flex items-center justify-center justify-center gap-2 mb-4">
                 <span className="font-bold">행운의 초성:</span>
-                 <div className="w-12 h-12 bg-yellow-300 border-2 border-black rounded-lg flex items-center justify-center font-black text-2xl shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
-                    {displayInitial}
-                </div>
+                 {displayInitial.map((char, index) => (
+                    <div key={index} className="w-12 h-12 bg-yellow-300 border-2 border-black rounded-lg flex items-center justify-center font-black text-2xl shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                        {char}
+                    </div>
+                 ))}
              </div>
             <Button onClick={handleSpin} variant="secondary" disabled={isSpinning} className="py-2 text-lg">
                 {isSpinning ? "돌아가는 중..." : "레버 당기기!"} <Dices className={isSpinning ? "animate-spin" : ""} />
@@ -337,14 +412,12 @@ const SlotMachine = ({ numbers, initial }) => {
     );
 }
 
-// --- View Components (Extracted) ---
-
 const HomeView = ({ onStart }) => (
   <div className="flex flex-col items-center text-center space-y-8 animate-fade-in py-10">
     <div className="relative mb-4">
       <span className="absolute -top-8 -left-8 text-7xl animate-bounce" style={{animationDuration: '2s'}}>🐴</span>
       <span className="absolute -bottom-8 -right-8 text-7xl animate-bounce delay-150" style={{animationDuration: '2.5s'}}>💖</span>
-      <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 leading-none tracking-tighter filter drop-shadow-[4px_4px_0px_rgba(0,0,0,1)]">
+      <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 leading-none tracking-tighter filter drop-shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
         2026<br/>LUCKY<br/>UNIVERSE
       </h1>
     </div>
@@ -425,6 +498,30 @@ const InputView = ({ userData, setUserData, onSubmit }) => {
 const ResultView = ({ fortuneData, setView, onTalismanStart }) => {
   if (!fortuneData) return <div className="p-10 text-center font-bold">데이터 오류</div>;
   
+  // 공유하기 기능: Web Share API 사용, 미지원 시 클립보드 복사
+  const handleShare = async () => {
+    const shareData = {
+      title: '2026 럭키 유니버스 🔮',
+      text: 'AI가 분석해주는 내 2026년 운세와 럭키 다마고치! 🍀 지금 바로 확인해보세요.',
+      url: window.location.href
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        console.log("Share cancelled");
+      }
+    } else {
+      try {
+         await navigator.clipboard.writeText(window.location.href);
+         alert("링크가 클립보드에 복사되었습니다! 📋\n친구들에게 붙여넣기로 공유해보세요.");
+      } catch (err) {
+         alert("공유하기를 지원하지 않는 브라우저입니다.");
+      }
+    }
+  };
+
   return (
     <div className="w-full max-w-md animate-slide-up space-y-8 pb-12 pt-6">
       <Card className="bg-gradient-to-br from-pink-100 via-yellow-50 to-indigo-100 relative overflow-visible mt-8">
@@ -495,11 +592,11 @@ const ResultView = ({ fortuneData, setView, onTalismanStart }) => {
                 <p className="text-2xl font-black text-right text-blue-600">{fortuneData.careerWealth?.salary || "측정 불가"}</p>
             </div>
              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-white p-3 rounded-xl border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                <div className="flex-1 bg-white p-3 rounded-xl border-2 border-black text-center shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
                     <h5 className="font-bold text-xs text-gray-500 mb-2">나의 업무 스타일</h5>
                     <p className="font-bold text-blue-800">{fortuneData.careerWealth?.workStyle || "열정적"}</p>
                 </div>
-                 <div className="bg-white p-3 rounded-xl border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                 <div className="flex-1 bg-white p-3 rounded-xl border-2 border-black text-center shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
                     <h5 className="font-bold text-xs text-gray-500 mb-2">숨겨진 재능 발견</h5>
                     <p className="font-bold text-blue-800">{fortuneData.careerWealth?.hiddenSkill || "리더십"}</p>
                 </div>
@@ -544,7 +641,7 @@ const ResultView = ({ fortuneData, setView, onTalismanStart }) => {
             <p className="text-xs text-red-500 mt-2 text-right font-bold">※ 이런 특징이 보이면 도망가세요!</p>
         </Card>
 
-        <Card className="bg-yellow-100 border-yellow-500" title="📅 대박 캘린더 (황금 말발굽일)" icon={<Calendar className="text-yellow-600 fill-current"/>}>
+        <Card title="📅 대박 캘린더 (황금 말발굽일)" icon={<Calendar className="text-yellow-600 fill-current"/>} className="bg-yellow-100 border-yellow-500">
             <div className="flex justify-around items-center">
                 {Array.isArray(fortuneData.luckyDates) && fortuneData.luckyDates.map((date, idx) => (
                     <div key={idx} className="text-center relative">
@@ -559,16 +656,15 @@ const ResultView = ({ fortuneData, setView, onTalismanStart }) => {
       </div>
 
       <div className="space-y-4 pt-4 sticky bottom-4 z-10">
-        {/* UPDATED: 버튼 텍스트 변경 */}
         <Button onClick={onTalismanStart} variant="secondary" className="shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] border-4">
           <Gamepad2 className="w-6 h-6 animate-bounce" /> 2026 나만의 럭키 다마고치 만들기
         </Button>
         <div className="flex gap-3">
-            <Button onClick={() => alert("스크린샷을 찍어 인스타 스토리에 공유해보세요!")} variant="outline" className="flex-1">
-            <Share2 className="w-5 h-5" /> 공유하기
+            <Button onClick={handleShare} variant="outline" className="flex-1">
+                <Share2 className="w-5 h-5" /> 공유하기
             </Button>
             <Button onClick={() => window.location.reload()} variant="outline" className="flex-1 bg-gray-200">
-            <RefreshCw className="w-5 h-5" /> 처음으로
+                <RefreshCw className="w-5 h-5" /> 처음으로
             </Button>
         </div>
       </div>
@@ -578,7 +674,6 @@ const ResultView = ({ fortuneData, setView, onTalismanStart }) => {
 
 const TalismanInputView = ({ wish, setWish, onGenerate, onBack }) => (
   <div className="w-full max-w-md animate-fade-in space-y-6 py-10">
-    {/* UPDATED: 카드 제목 및 설명, 버튼 텍스트 변경 */}
     <Card title="2026 럭키 다마고치 연구소 👾" icon={<Gamepad2 className="text-yellow-500 fill-current"/>} className="bg-yellow-50">
       <p className="text-center font-bold text-lg mb-2">2026년 꼭 이루고 싶은 소원은?</p>
       <p className="text-center text-gray-500 text-sm mb-6 font-mono">MBTI와 소원에 찰떡인 나만의 럭키 다마고치를 그려드려요! 👾✨</p>
@@ -600,35 +695,63 @@ const TalismanInputView = ({ wish, setWish, onGenerate, onBack }) => (
   </div>
 );
 
-const TalismanResultView = ({ image, userData, onReset, onBack }) => (
-  <div className="w-full max-w-md animate-fade-in space-y-6 py-10">
-      <Card className="bg-yellow-50 border-yellow-400 relative overflow-visible mt-8">
-          <div className="absolute -top-6 -left-6 text-5xl animate-bounce">🧧</div>
-          <div className="absolute -top-6 -right-6 text-5xl animate-bounce delay-100">✨</div>
-          {/* UPDATED: 결과 화면 제목 변경 */}
-          <h2 className="text-2xl font-black text-center mb-4">나만의 2026 럭키 다마고치</h2>
-          <div className="border-4 border-black p-4 rounded-2xl bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] rotate-1 flex items-center justify-center">
-              <img src={image} alt="Generated Lucky Tamagotchi" className="w-full rounded-xl h-auto" style={{aspectRatio: '1/1', objectFit: 'contain'}} />
-          </div>
-          {/* UPDATED: 설명 문구 변경 */}
-          <p className="text-center text-sm font-bold text-gray-500 mt-4 font-mono">
-              * 당신의 MBTI({userData.mbti})와 소원을 담은 럭키 다마고치예요!<br/>
-              (프로필 사진이나 배경화면으로 딱이죠? 😉)
-          </p>
-           <div className="flex gap-3 mt-6">
-            <Button onClick={() => alert("이미지를 길게 눌러 저장하세요!")} variant="primary" className="flex-1">
-               <Camera className="w-5 h-5" /> 이미지 저장
-            </Button>
-            <Button onClick={onReset} variant="outline" className="flex-1">
-               새로 만들기
-            </Button>
-          </div>
-           <button onClick={onBack} className="w-full text-center text-gray-500 underline font-bold mt-4">
-              운세 결과로 돌아가기
-          </button>
-      </Card>
-  </div>
-);
+const TalismanResultView = ({ image, userData, onReset, onBack }) => {
+    // [UPDATED] 이미지 다운로드 핸들러
+    const handleDownload = async () => {
+        try {
+            // 1. SVG Data URL을 PNG Blob으로 변환
+            const pngBlob = await svgDataURLToPngBlob(image);
+            
+            if (!pngBlob) throw new Error("PNG conversion failed.");
+
+            const url = window.URL.createObjectURL(pngBlob);
+
+            // 2. 다운로드 링크 생성 및 클릭
+            const link = document.createElement('a');
+            link.href = url;
+            // 파일명 생성 (다마고치_시간.png)
+            link.download = `lucky_tamagotchi_${new Date().getTime()}.png`; // SVG라도 PNG로 저장되게 설정
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            // 메모리 해제
+            window.URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error("Download failed:", error);
+            alert("이미지 자동 저장이 차단되었습니다. 이미지를 길게 눌러서 저장해주세요! 📸");
+        }
+    };
+
+    return (
+      <div className="w-full max-w-md animate-fade-in space-y-6 py-10">
+          <Card className="bg-yellow-50 border-yellow-400 relative overflow-visible mt-8">
+              <div className="absolute -top-6 -left-6 text-5xl animate-bounce">🧧</div>
+              <div className="absolute -top-6 -right-6 text-5xl animate-bounce delay-100">✨</div>
+              <h2 className="text-2xl font-black text-center mb-4">나만의 2026 럭키 다마고치</h2>
+              <div className="border-4 border-black p-4 rounded-2xl bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] rotate-1 flex items-center justify-center">
+                  <img src={image} alt="Generated Lucky Tamagotchi" className="w-full rounded-xl h-auto" style={{aspectRatio: '1/1', objectFit: 'contain'}} />
+              </div>
+              <p className="text-center text-sm font-bold text-gray-500 mt-4 font-mono">
+                  * 당신의 MBTI({userData.mbti})와 소원을 담은 럭키 다마고치예요!<br/>
+                  (프로필 사진이나 배경화면으로 딱이죠? 😉)
+              </p>
+               <div className="flex gap-3 mt-6">
+                {/* 다운로드 기능 연결 */}
+                <Button onClick={handleDownload} variant="primary" className="flex-1">
+                   <Camera className="w-5 h-5" /> 이미지 저장
+                </Button>
+                <Button onClick={onReset} variant="outline" className="flex-1">
+                   새로 만들기
+                </Button>
+              </div>
+               <button onClick={onBack} className="w-full text-center text-gray-500 underline font-bold mt-4">
+                  운세 결과로 돌아가기
+              </button>
+          </Card>
+      </div>
+    );
+};
 
 // --- Main App Component ---
 
@@ -656,8 +779,12 @@ export default function App() {
   const handleTalismanGen = async () => {
     if (!talismanWish) return alert("소원을 입력해주세요!");
     setView('talismanLoading');
+    
     const imageUrl = await generateLuckyIconImage(talismanWish, userData);
+    
+    // SVG 로딩 대기 (깜빡임 방지)
     if (imageUrl) {
+        // 이미지는 메모리에서 base64로 로드되므로, 별도의 img.onload 대기는 필요 없습니다.
         setTalismanImage(imageUrl);
         setView('talismanResult');
     } else {
@@ -668,9 +795,9 @@ export default function App() {
   return (
     <div className="min-h-screen bg-cover bg-center text-black font-sans flex items-center justify-center p-4 overflow-x-hidden" style={{backgroundImage: 'linear-gradient(rgba(240, 240, 255, 0.8), rgba(240, 240, 255, 0.8)), url("[https://www.transparenttextures.com/patterns/cubes.png](https://www.transparenttextures.com/patterns/cubes.png)")'}}>
       <div className="w-full max-w-md">
-        <header className="fixed top-0 left-0 right-0 bg-white/90 backdrop-blur-md z-50 border-b-4 border-black px-4 py-3 flex justify-between items-center lg:hidden shadow-[0px_4px_0px_0px_rgba(0,0,0,0.1)]">
-          <span className="font-black font-mono text-xl">LUCKY '26</span>
-          <span className="text-xs bg-pink-500 text-white px-2 py-1 rounded-md font-bold border-2 border-black">FULL ver.</span>
+        <header className="fixed top-0 left-0 right-0 bg-white/90 backdrop-blur-md z-50 border-b-4 border-black px-4 py-3 flex justify-between items-center shadow-[0px_4px_0px_0px_rgba(0,0,0,0.1)]">
+          <span className="font-black font-mono text-xl">LUCKY 2026</span>
+          <span className="text-xs bg-pink-500 text-white px-2 py-1 rounded-md font-bold border-2 border-black">한양</span>
         </header>
 
         <div className="pt-16 lg:pt-0 pb-10">
@@ -679,7 +806,6 @@ export default function App() {
           {view === 'loading' && <LoadingScreen message="우주의 기운을 모아 2026년을 분석 중..." />}
           {view === 'result' && <ResultView fortuneData={fortuneData} setView={setView} onTalismanStart={() => setView('talismanInput')} />}
           {view === 'talismanInput' && <TalismanInputView wish={talismanWish} setWish={setTalismanWish} onGenerate={handleTalismanGen} onBack={() => setView('result')} />}
-          {/* UPDATED: 로딩 메시지 변경 */}
           {view === 'talismanLoading' && <LoadingScreen message="귀여운 럭키 다마고치를 소환하는 중..." />}
           {view === 'talismanResult' && <TalismanResultView image={talismanImage} userData={userData} onReset={() => {setTalismanImage(null); setView('talismanInput');}} onBack={() => setView('result')} />}
         </div>
