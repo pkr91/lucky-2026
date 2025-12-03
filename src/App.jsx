@@ -5,27 +5,12 @@ import { Sparkles, Heart, Briefcase, Shield, Zap, Calendar, Camera, Share2, Chev
  * 2026 럭키 유니버스 (Lucky Universe 2026) - Hanyang Univ. Project Ver.
  */
 
-// [수정됨] API 키 관련 로직은 serverless/api/fortune.js로 이동하여 클라이언트에서는 제거합니다.
-/*
-// --- API Service Configuration (Multi-Key Load Balancing) ---
-const API_KEY_POOL = [
-  import.meta.env.VITE_API_KEY_1,
-  import.meta.env.VITE_API_KEY, // 기본 키(백업용)
-].filter(key => key); // 비어있는 키는 자동으로 제외
-
-// 랜덤 키 선택 함수
-const getApiKey = () => {
-  if (API_KEY_POOL.length === 0) return "";
-  return API_KEY_POOL[Math.floor(Math.random() * API_KEY_POOL.length)];
-};
-*/
-
 // --- Utility Functions ---
 
 // 마크다운 제거 함수
 const cleanMarkdown = (text) => {
     if (!text) return "";
-    return text.replace(/\*\*/g, "").replace(/\*/g, "").replace(/`/g, "").trim(); // [수정됨] trim 추가
+    return text.replace(/\*\*/g, "").replace(/\*/g, "").replace(/`/g, "").trim(); // trim 추가
 };
 
 // 운세 결과 카드 이미지 생성 함수
@@ -182,8 +167,9 @@ async function callServerlessAPI(prompt, retryCount = 3) {
         body: JSON.stringify({ prompt: prompt }) // fortune.js에서 req.body.prompt로 접근
       });
 
-      if (response.status === 429) {
-        console.warn(`Rate limit (429). Retrying in ${delay}ms...`);
+      if (response.status === 429 || response.status === 503) {
+        // [수정됨] 503 (Service Unavailable/Model Overload) 발생 시에도 재시도
+        console.warn(`API Error ${response.status} (Rate limit/Overload). Retrying in ${delay}ms...`);
         await new Promise(r => setTimeout(r, delay));
         delay *= 2;
         continue;
@@ -209,7 +195,6 @@ async function callServerlessAPI(prompt, retryCount = 3) {
 
 
 async function generateFullFortune(userData) {
-  // [수정됨] API Key Pool 체크 및 재시도 루프 제거. callServerlessAPI에서 처리.
   
   const prompt = `
     역할: 30년 경력의 명리학자이자 MZ세대 멘토인 AI 점술가.
@@ -254,13 +239,13 @@ async function generateFullFortune(userData) {
   `;
 
     try {
-        const data = await callServerlessAPI(prompt); // [수정됨] 서버리스 API 호출
+        const data = await callServerlessAPI(prompt); // 서버리스 API 호출
         const textResponse = data.candidates[0].content.parts[0].text;
         return normalizeFortuneData(safeJSONParse(textResponse));
 
     } catch (error) {
         console.error("Full Fortune Generation Error:", error);
-        // [수정됨] callServerlessAPI에서 throw한 에러를 여기서 catch하여 알림
+        // callServerlessAPI에서 throw한 에러를 여기서 catch하여 알림
         alert("앗! 지금 사용자가 너무 많아서 AI 점술가가 조금 바빠요! 🤯\n잠시 뒤에 다시 시도해 주시면 금방 봐드릴게요! 🍀");
         return null;
     }
@@ -268,7 +253,6 @@ async function generateFullFortune(userData) {
 
 // [무료 모드] 8비트 픽셀 아트(도트) 생성 함수 (SVG)
 async function generateCutePixelArtSVG(description) {
-  // [수정됨] API Key Pool 체크 및 재시도 루프 제거. callServerlessAPI에서 처리.
     const svgPrompt = `
       Role: Expert Pixel Artist.
       Task: Create a CUTE, 8-BIT PIXEL ART SVG code for: "${description}".
@@ -278,11 +262,11 @@ async function generateCutePixelArtSVG(description) {
       2. The art should look like a retro game sprite (Pokemon/Tamagotchi), 24x24 or 32x32 grid.
       3. Colors: Vibrant pastel colors + Black outline for contrast.
       4. ViewBox: "0 0 512 512" (scale up the pixels).
-      5. Return ONLY the raw <svg> string. No markdown. No explanations. IF YOU CANNOT GENERATE VALID SVG, RETURN A SIMPLE PLACEHOLDER SVG.
-    `;
+      5. Return **ONLY the raw <svg> string**. No markdown. No explanations.
+    `; // [수정됨] SVG 포맷을 더 명확하게 강조
 
     try {
-        const data = await callServerlessAPI(svgPrompt); // [수정됨] 서버리스 API 호출
+        const data = await callServerlessAPI(svgPrompt); // 서버리스 API 호출
         let svgCode = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
         
         const svgMatch = svgCode.match(/<svg[\s\S]*?<\/svg>/i);
@@ -307,7 +291,6 @@ async function generateCutePixelArtSVG(description) {
 }
 
 async function generateLuckyIconImage(wish, userData) {
-  // [수정됨] API Key Pool 체크 제거. callServerlessAPI에서 에러 처리
   
   try {
     const designPrompt = `
@@ -318,7 +301,7 @@ async function generateLuckyIconImage(wish, userData) {
     `;
 
     // 1. Text generation using serverless function
-    const designData = await callServerlessAPI(designPrompt); // [수정됨] 서버리스 API 호출
+    const designData = await callServerlessAPI(designPrompt); // 서버리스 API 호출
 
     let characterDescription = "cute fluffy rabbit";
     const extractedText = designData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
@@ -338,26 +321,28 @@ async function generateLuckyIconImage(wish, userData) {
 
 // Gemini Chat Function
 async function generateChatResponse(history, userData, fortuneSummary) {
-  // [수정됨] API Key Pool 체크 제거.
   
   const systemPrompt = `
     You are 'Lucky Tamagotchi'.
-    Info: MBTI=${userData.mbti}, Fortune="${fortuneSummary}".
+    Info: MBTI=${userData.mbti}, Birth Date=${userData.birthDate}, Gender=${userData.gender}.
+    Fortune Summary (2026): "${fortuneSummary}".
+    
     Persona: Cute, informal Korean(Banmal), **적절한 이모지 사용**을 유지할 것.
-    **절대 JSON 형식을 사용하지 말고,** 순수한 대화 텍스트만 출력할 것.
-    No Markdown formatting (bold, italic).
-  `;
+    **사용자의 사주 정보와 운세 요약을 기억하고 대화에 자연스럽게 활용**하여 개인화된 조언을 제공할 것.
+    **절대 JSON 형식이나 대괄호([])를 포함하는 응답 형식을 사용하지 말고,** 순수한 대화 텍스트만 출력할 것.
+  `; // [수정됨] 사주 정보 기억 및 대괄호 사용 금지 지침 추가
 
   // history를 포함하는 최종 프롬프트 구성
   const prompt = systemPrompt + "\n\nChat History:\n" + 
     history.map(msg => `${msg.role}: ${msg.text}`).join('\n') + 
-    "\n\nTamagotchi's Response (ONLY plain text):"; // [수정됨] 응답 포맷 명확히 지정
+    "\n\nTamagotchi's Response (ONLY plain text):"; 
 
   try {
-    const data = await callServerlessAPI(prompt); // [수정됨] 서버리스 API 호출
+    const data = await callServerlessAPI(prompt); // 서버리스 API 호출
     
     let responseText = data.candidates[0].content.parts[0].text;
-    // [수정됨] 불필요한 JSON wrapper 제거 로직 추가 (혹시 모를 상황 대비)
+    
+    // 불필요한 JSON wrapper 제거 로직 (혹시 모를 상황 대비)
     const unwantedPrefix = /^{\s*["']?Tamagotchi["']?\s*:\s*["']?/;
     const unwantedSuffix = /["']?\s*,\s*}?$/;
     responseText = responseText.replace(unwantedPrefix, '').replace(unwantedSuffix, '').trim();
@@ -486,7 +471,7 @@ const HomeView = ({ onStart }) => (
         <div className="relative mb-4">
             <span className="absolute -top-8 -left-8 text-7xl animate-bounce" style={{animationDuration: '2s'}}>🐴</span>
             <span className="absolute -bottom-8 -right-8 text-7xl animate-bounce delay-150" style={{animationDuration: '2.5s'}}>💖</span>
-            <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 leading-none tracking-tighter filter drop-shadow-[4px_4px_0px_rgba(0,0,0,1)]">
+            <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 leading-none tracking-tighter filter drop-shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                 2026<br/>LUCKY<br/>UNIVERSE
             </h1>
         </div>
@@ -521,7 +506,7 @@ const InputView = ({ userData, setUserData, onSubmit }) => {
                             type="date" 
                             className="w-full p-3 border-2 border-black rounded-xl focus:outline-none focus:ring-4 focus:ring-pink-300 text-lg"
                             value={userData.birthDate}
-                            // [수정됨] max 속성을 사용하여 년도 입력을 제한 (브라우저 지원에 따라 다름)
+                            // max 속성을 사용하여 년도 입력을 제한 (브라우저 지원에 따라 다름)
                             max="9999-12-31" 
                             onChange={handleBirthDateChange}
                         />
@@ -859,7 +844,7 @@ const ChatView = ({ messages, onSendMessage, onBack }) => {
 
 
 const TalismanResultView = ({ image, userData, fortuneData, onReset, onBack, onChatStart }) => {
-    // [수정됨] 이미지 저장 오류 해결 (Canvas 활용하여 PNG 변환 후 저장)
+    // 이미지 저장 오류 해결 (Canvas 활용하여 PNG 변환 후 저장)
     const handleDownload = async () => {
         try {
             const blob = await svgDataURLToPngBlob(image);
@@ -884,7 +869,14 @@ const TalismanResultView = ({ image, userData, fortuneData, onReset, onBack, onC
                 <div className="absolute -top-6 -right-6 text-5xl animate-bounce delay-100">✨</div>
                 <h2 className="text-2xl font-black text-center mb-4">나만의 2026 럭키 다마고치</h2>
                 <div className="border-4 border-black p-4 rounded-2xl bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] rotate-1 flex items-center justify-center">
-                    <img src={image} alt="Generated Lucky Tamagotchi" className="w-full rounded-xl h-auto" style={{aspectRatio: '1/1', objectFit: 'contain'}} />
+                    {/* [수정됨] image가 null인 경우에도 플레이스홀더가 보이도록 처리 */}
+                    {image ? (
+                        <img src={image} alt="Generated Lucky Tamagotchi" className="w-full rounded-xl h-auto" style={{aspectRatio: '1/1', objectFit: 'contain'}} />
+                    ) : (
+                        <div className="w-full h-full flex items-center justify-center text-center text-gray-500 font-bold p-8" style={{aspectRatio: '1/1'}}>
+                            이미지 생성 실패! 🥹<br/>다시 시도해 주세요.
+                        </div>
+                    )}
                 </div>
                 <p className="text-center text-sm font-bold text-gray-500 mt-4 font-mono">
                     * 당신의 MBTI({userData.mbti})와 소원을 담은 럭키 다마고치예요!<br/>
@@ -892,12 +884,12 @@ const TalismanResultView = ({ image, userData, fortuneData, onReset, onBack, onC
                 </p>
                  
                  <div className="flex flex-col gap-3 mt-6">
-                    <Button onClick={onChatStart} variant="secondary" className="w-full">
+                    <Button onClick={onChatStart} variant="secondary" className="w-full" disabled={!fortuneData}>
                         <MessageCircle className="w-5 h-5" /> 다마고치랑 대화하기
                     </Button>
                     
                     <div className="flex gap-3">
-                        <Button onClick={handleDownload} variant="primary" className="flex-1">
+                        <Button onClick={handleDownload} variant="primary" className="flex-1" disabled={!image}>
                         <Camera className="w-5 h-5" /> 이미지 저장
                         </Button>
                         <Button onClick={onReset} variant="outline" className="flex-1">
@@ -949,7 +941,9 @@ export default function App() {
             setTalismanImage(imageUrl);
             setView('talismanResult');
         } else {
-            setView('talismanInput');
+            // 이미지 생성 실패 시, 다시 입력 화면으로 돌아가거나 오류 메시지 표시
+            setTalismanImage(null); // 실패 시 이미지 초기화
+            setView('talismanResult'); // 플레이스홀더를 보기 위해 결과 화면으로 이동
         }
     };
 
@@ -958,6 +952,7 @@ export default function App() {
         const newUserMsg = { role: 'user', text };
         setChatMessages(prev => [...prev, newUserMsg]);
 
+        // 사용자 정보와 운세 요약을 함께 전달하여 AI가 사주를 기억하고 대화에 활용하도록 합니다.
         const aiResponse = await generateChatResponse([...chatMessages, newUserMsg], userData, fortuneData?.summary);
         
         setChatMessages(prev => [...prev, { role: 'model', text: aiResponse }]);
@@ -969,7 +964,8 @@ export default function App() {
     };
 
     return (
-        <div className="min-h-screen bg-cover bg-center text-black font-sans flex items-center justify-center p-4 overflow-x-hidden" style={{backgroundImage: 'linear-gradient(rgba(240, 240, 255, 0.8), rgba(240, 240, 255, 0.8)), url("[https://www.transparenttextures.com/patterns/cubes.png](https://www.transparenttextures.com/patterns/cubes.png)")'}}>
+        <div className="min-h-screen bg-cover bg-center text-black font-sans flex items-center justify-center p-4 overflow-x-hidden" 
+             style={{backgroundImage: 'linear-gradient(rgba(240, 240, 255, 0.8), rgba(240, 240, 255, 0.8)), url("[https://www.transparenttextures.com/patterns/cubes.png](https://www.transparenttextures.com/patterns/cubes.png)")'}}>
             <div className="w-full max-w-md">
                 <header className="fixed top-0 left-0 right-0 bg-white/90 backdrop-blur-md z-50 border-b-4 border-black px-4 py-3 flex justify-between items-center shadow-[0px_4px_0px_0px_rgba(0,0,0,0.1)]">
                     <span className="font-black font-mono text-xl">LUCKY 2026</span>
