@@ -168,7 +168,7 @@ async function callServerlessAPI(prompt, retryCount = 3) {
       });
 
       if (response.status === 429 || response.status === 503) {
-        // [수정됨] 503 (Service Unavailable/Model Overload) 발생 시에도 재시도
+        // 503 (Service Unavailable/Model Overload) 발생 시에도 재시도
         console.warn(`API Error ${response.status} (Rate limit/Overload). Retrying in ${delay}ms...`);
         await new Promise(r => setTimeout(r, delay));
         delay *= 2;
@@ -324,13 +324,11 @@ async function generateChatResponse(history, userData, fortuneSummary) {
   
   const systemPrompt = `
     You are 'Lucky Tamagotchi'.
-    Info: MBTI=${userData.mbti}, Birth Date=${userData.birthDate}, Gender=${userData.gender}.
-    Fortune Summary (2026): "${fortuneSummary}".
-    
-    Persona: Cute, informal Korean(Banmal), **적절한 이모지 사용**을 유지할 것.
-    **사용자의 사주 정보와 운세 요약을 기억하고 대화에 자연스럽게 활용**하여 개인화된 조언을 제공할 것.
-    **절대 JSON 형식이나 대괄호([])를 포함하는 응답 형식을 사용하지 말고,** 순수한 대화 텍스트만 출력할 것.
-  `; // [수정됨] 사주 정보 기억 및 대괄호 사용 금지 지침 추가
+    Info: MBTI=${userData.mbti}, Birth Date=${userData.birthDate}, Gender=${userData.gender}, Fortune Summary (2026)="${fortuneSummary}".
+    Persona: Cute, informal Korean(Banmal), use emojis sparingly.
+    You must naturally incorporate the user's MBTI, birth date, gender, and fortune summary into the conversation and advice.
+    No Markdown formatting (bold, italic).
+  `; // [수정됨] 사용자 요청 프롬프트로 변경
 
   // history를 포함하는 최종 프롬프트 구성
   const prompt = systemPrompt + "\n\nChat History:\n" + 
